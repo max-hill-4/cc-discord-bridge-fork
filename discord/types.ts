@@ -129,4 +129,15 @@ export interface BotDependencies {
   onContinueSession?: (ctx: InteractionContext) => Promise<void>;
   /** Optional channel monitoring config for auto-responding to messages */
   monitorConfig?: MonitorConfig;
+  /**
+   * Callback for plain (non-slash) messages sent in session channels.
+   * Invoked with (content, channelId, message). If the channelId is not a
+   * known session channel, the callback should no-op.
+   */
+  onSessionChannelMessage?: (
+    content: string,
+    channelId: string,
+    // deno-lint-ignore no-explicit-any
+    message: any,
+  ) => Promise<void>;
 }

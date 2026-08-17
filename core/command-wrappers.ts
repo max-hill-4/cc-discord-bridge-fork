@@ -221,7 +221,7 @@ export function createClaudeCommandHandlers(
   messageHistory: MessageHistoryOps,
   _getClaudeController: (channelId?: string) => AbortController | null
 ): Map<string, { execute: (ctx: InteractionContext) => Promise<void>; handleButton?: (ctx: InteractionContext, customId: string) => Promise<void> }> {
-  const { claude: claudeHandlers, enhancedClaude: enhancedClaudeHandlers, additionalClaude: additionalClaudeHandlers } = handlers;
+  const { claude: claudeHandlers, enhancedClaude: enhancedClaudeHandlers, additionalClaude: additionalClaudeHandlers, importSession: importSessionHandlers } = handlers;
   const { addToHistory } = messageHistory;
 
   return new Map([
@@ -429,6 +429,14 @@ export function createClaudeCommandHandlers(
         const includeExercises = ctx.getBoolean('include_exercises');
         const stepByStep = ctx.getBoolean('step_by_step');
         await additionalClaudeHandlers.onClaudeLearn(ctx, topic, level || undefined, includeExercises || undefined, stepByStep || undefined);
+      }
+    }],
+    ['import-sessions', {
+      execute: async (ctx: InteractionContext) => {
+        const limit = ctx.getInteger('limit') ?? 50;
+        const backfill = ctx.getInteger('backfill') ?? 5;
+        await ctx.deferReply();
+        await importSessionHandlers.onImportSessions(ctx, limit, backfill);
       }
     }],
   ]);

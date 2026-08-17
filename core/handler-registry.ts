@@ -17,6 +17,7 @@ import type { ClaudeMessage } from "../claude/index.ts";
 import { claudeCommands, createClaudeHandlers } from "../claude/index.ts";
 import { enhancedClaudeCommands, createEnhancedClaudeHandlers } from "../claude/index.ts";
 import { additionalClaudeCommands, createAdditionalClaudeHandlers } from "../claude/additional-index.ts";
+import { importSessionCommands, createImportSessionHandlers } from "../claude/import-command.ts";
 import { advancedSettingsCommands, createAdvancedSettingsHandlers, type AdvancedBotSettings } from "../settings/index.ts";
 import { unifiedSettingsCommands, createUnifiedSettingsHandlers, type UnifiedBotSettings } from "../settings/index.ts";
 import { gitCommands, createGitHandlers } from "../git/index.ts";
@@ -29,6 +30,7 @@ import { screenshotCommands, createScreenshotHandlers } from "../screenshot/inde
 import { infoCommands, createInfoCommandHandlers } from "../claude/index.ts";
 import { cleanSessionId, ClaudeSessionManager } from "../claude/index.ts";
 import type { SessionThreadCallbacks } from "../claude/index.ts";
+import type { Client } from "npm:discord.js@14.14.1";
 import type { ClaudeModelOptions } from "../claude/index.ts";
 import type { AskUserCallback } from "../claude/index.ts";
 import type { PermissionRequestCallback } from "../claude/index.ts";
@@ -134,6 +136,7 @@ export interface AllHandlers {
   claude: ReturnType<typeof createClaudeHandlers>;
   enhancedClaude: ReturnType<typeof createEnhancedClaudeHandlers>;
   additionalClaude: ReturnType<typeof createAdditionalClaudeHandlers>;
+  importSession: ReturnType<typeof createImportSessionHandlers>;
   advancedSettings: ReturnType<typeof createAdvancedSettingsHandlers>;
   unifiedSettings: ReturnType<typeof createUnifiedSettingsHandlers>;
   git: ReturnType<typeof createGitHandlers>;
@@ -144,6 +147,8 @@ export interface AllHandlers {
   agent: ReturnType<typeof createAgentHandlers>;
   screenshot: ReturnType<typeof createScreenshotHandlers>;
   infoCommands: ReturnType<typeof createInfoCommandHandlers>;
+  /** Build ClaudeModelOptions from current settings (model, thinking, effort, etc.). */
+  getQueryOptions: () => import("../claude/client.ts").ClaudeModelOptions;
 }
 
 /**
@@ -187,6 +192,9 @@ export interface HandlerRegistryDeps {
   /** Thread-per-session callbacks (optional). When provided, each /claude
    *  invocation creates a dedicated Discord thread for its output. */
   sessionThreads?: SessionThreadCallbacks;
+  /** Late-bound Discord client — used by /import-sessions to create channels.
+   *  Set from index.ts after the bot is created. */
+  getBotClient?: () => Client | undefined;
 }
 
 /**
@@ -613,6 +621,12 @@ export function createAllHandlers(
     getQueryOptions,
   });
 
+  const importSessionHandlers = createImportSessionHandlers({
+    getBotClient: deps.getBotClient,
+    categoryName: categoryName,
+    workDir,
+  });
+
   const advancedSettingsHandlers = createAdvancedSettingsHandlers({
     settings: currentSettings.advanced,
     updateSettings: settings.updateAdvanced,
@@ -649,6 +663,7 @@ export function createAllHandlers(
     claude: claudeHandlers,
     enhancedClaude: enhancedClaudeHandlers,
     additionalClaude: additionalClaudeHandlers,
+    importSession: importSessionHandlers,
     advancedSettings: advancedSettingsHandlers,
     unifiedSettings: unifiedSettingsHandlers,
     git: gitHandlers,
@@ -659,6 +674,7 @@ export function createAllHandlers(
     agent: agentHandlers,
     screenshot: screenshotHandlers,
     infoCommands: infoCommandHandlers,
+    getQueryOptions,
   };
 }
 
@@ -672,6 +688,7 @@ export function getAllCommands() {
     ...claudeCommands,
     ...enhancedClaudeCommands,
     ...additionalClaudeCommands,
+    ...importSessionCommands,
     ...advancedSettingsCommands,
     ...unifiedSettingsCommands,
     agentCommand,

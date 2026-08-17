@@ -27,6 +27,10 @@ import { buildQuestionMessages, parseAskUserButtonId, parseAskUserConfirmId, typ
 import { buildPermissionEmbed, parsePermissionButtonId, type PermissionRequestCallback } from "./claude/index.ts";
 import { claudeCommands, enhancedClaudeCommands } from "./claude/index.ts";
 import { additionalClaudeCommands } from "./claude/additional-index.ts";
+import { getSessionIdForChannel, registerSessionChannel, unregisterSessionChannel, getEntryForChannel } from "./util/session-channel-map.ts";
+import { startSessionFileWatcher } from "./util/session-watcher.ts";
+import { extractFirstUserPrompt, readLastNMessages, projectSlugFromWorkDir } from "./util/sessions.ts";
+import { sanitizeChannelName } from "./discord/utils.ts";
 import { initModels } from "./claude/enhanced-client.ts";
 import { advancedSettingsCommands, DEFAULT_SETTINGS, unifiedSettingsCommands, UNIFIED_DEFAULT_SETTINGS } from "./settings/index.ts";
 import { gitCommands } from "./git/index.ts";
@@ -76,6 +80,12 @@ export async function createClaudeCodeBot(config: BotConfig) {
   const claudeControllers = new Map<string, AbortController>();
   const DEFAULT_CONTROLLER_CHANNEL = "__default__";
   let claudeSessionId: string | undefined;
+
+  // Sessions the bot is currently running via `claude --resume` (started by a
+  // Discord message in a session channel). Used by the JSONL watcher to skip
+  // mirroring writes that the bot's own stream is already sending to Discord.
+  const activeBotSessions = new Set<string>();
+  const isActiveBotSession = (sessionId: string): boolean => activeBotSessions.has(sessionId);
 
   const getClaudeController = (channelId?: string): AbortController | null => {
     const key = channelId || DEFAULT_CONTROLLER_CHANNEL;
@@ -274,6 +284,7 @@ export async function createClaudeCodeBot(config: BotConfig) {
         }
       },
       sessionThreads: sessionThreadCallbacks,
+      getBotClient: () => bot?.client,
     },
     {
       getController: getClaudeController,
@@ -324,6 +335,119 @@ export async function createClaudeCodeBot(config: BotConfig) {
     onContinueSession: async (ctx) => {
       await allHandlers.claude.onContinue(ctx);
     },
+    onSessionChannelMessage: async (content, channelId, message) => {
+      // Lookup session entry for this channel from the persistent map.
+      const entry = await getEntryForChannel(channelId);
+      if (!entry) return; // not a session channel
+      const sessionId = entry.sessionId;
+
+      // Decode the project slug back to a working directory. Claude Code
+      // encodes cwd by replacing `/` with `-`, so `-home-user-foo`
+      // → `/home/user/foo`.
+      // If the decoded path isn't a directory (e.g., ambiguous `-` in a path
+      // segment), fall back to the bot's workDir — claude --resume will fail
+      // to find the session, but at least we won't crash.
+      const decodedPath = entry.projectSlug.replaceAll('-', '/');
+      let sessionWorkDir = workDir;
+      try {
+        const stat = await Deno.stat(decodedPath);
+        if (stat.isDirectory) sessionWorkDir = decodedPath;
+      } catch { /* fall back to bot workDir */ }
+
+      // Re-sort the claude-code category by JSONL mtime so the most recently
+      // active session floats to the top. Fire-and-forget.
+      void sortChannelsByMtime(bot).catch((err) => {
+        console.warn('[SessionChannel] Sort failed:', err);
+      });
+
+      // Per-channel concurrency: if a Claude run is already active in this
+      // channel, drop the new message with a brief note. The user can try
+      // again when the current run finishes.
+      const existing = getClaudeController(channelId);
+      if (existing) {
+        try {
+          await message.reply({
+            content: "⏳ A Claude run is already in progress in this channel. Wait for it to finish before sending another message.",
+          });
+        } catch { /* ignore */ }
+        return;
+      }
+
+      // Bind the sender to the session channel (not the main bot channel).
+      // deno-lint-ignore no-explicit-any
+      const channelSender = createClaudeSender(createChannelSenderAdapter(message.channel as any));
+
+      // Send a "thinking" status so the user sees immediate feedback.
+      // deno-lint-ignore no-explicit-any
+      let statusMsg: any = null;
+      try {
+        statusMsg = await message.channel.send({
+          embeds: [{
+            color: 0x0099ff,
+            title: 'session · continuing',
+            description: `Resuming session \`${sessionId.substring(0, 8)}\`...`,
+            timestamp: true,
+          }],
+        });
+      } catch { /* ignore */ }
+
+      const controller = new AbortController();
+      setClaudeController(controller, channelId);
+      activeBotSessions.add(sessionId);
+
+      try {
+        const result = await sendToClaudeCode(
+          sessionWorkDir,
+          content,
+          controller,
+          sessionId,
+          undefined,
+          (jsonData) => {
+            const claudeMessages = convertToClaudeMessages(jsonData);
+            if (claudeMessages.length > 0) {
+              channelSender(claudeMessages).catch(() => {});
+            }
+          },
+          false,
+          { ...allHandlers.getQueryOptions(), channelId },
+        );
+
+        // Update the in-memory map in case the SDK returned a new session ID.
+        if (result.sessionId && result.sessionId !== sessionId) {
+          await registerSessionChannel(channelId, {
+            sessionId: result.sessionId,
+            projectSlug: '', // unknown for continuation; preserved if empty
+            firstPrompt: '',
+          });
+        }
+
+        // Remove the "thinking" status — output has replaced it.
+        if (statusMsg) {
+          try {
+            await statusMsg.delete();
+          } catch { /* ignore */ }
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        try {
+          if (statusMsg) {
+            await statusMsg.edit({
+              embeds: [{
+                color: 0xff0000,
+                title: 'session · error',
+                description: `\`${errMsg.substring(0, 1000)}\``,
+                timestamp: true,
+              }],
+            });
+          } else {
+            await message.reply({ content: `❌ Error: ${errMsg.substring(0, 500)}` });
+          }
+        } catch { /* ignore */ }
+      } finally {
+        setClaudeController(null, channelId);
+        activeBotSessions.delete(sessionId);
+      }
+    },
     ...(monitorChannelId && monitorBotIds?.length && {
       monitorConfig: {
         channelId: monitorChannelId,
@@ -365,6 +489,17 @@ export async function createClaudeCodeBot(config: BotConfig) {
 
   // Create Discord bot
   bot = await createDiscordBot(config, handlers, buttonHandlers, dependencies, crashHandler);
+
+  // Filesystem watcher — when a Claude session runs on the VPS directly
+  // (not via Discord), the JSONL gets appended to. Trigger a global mtime
+  // sort so the most recently active session floats to the top.
+  startSessionFileWatcher({
+    getBot: () => bot,
+    sortChannelsByMtime,
+    isActiveBotSession,
+    autoImportSession: (sid, slug, b) => autoImportSession(sid, slug, b),
+    excludeSlugs: [projectSlugFromWorkDir(workDir)],
+  });
 
   // Create Discord sender for Claude messages
   claudeSender = createClaudeSender(createDiscordSenderAdapter(bot));
@@ -536,6 +671,216 @@ function createChannelSenderAdapter(channel: any): DiscordSender {
       await sendMessageContent(channel, content);
     }
   };
+}
+
+/**
+ * Auto-import a new CLI session (one we don't have a Discord channel for yet).
+ * Reads the first user prompt from the JSONL for the channel name, creates a
+ * text channel under the `claude-code` category, backfills the last 5
+ * messages, pins session metadata, and registers it in the persistent map.
+ *
+ * Returns the new channel ID, or null if the session isn't ready yet (no
+ * user prompt in the first 2KB — e.g. session just created with no input).
+ */
+async function autoImportSession(sessionId: string, projectSlug: string, botInstance: any): Promise<string | null> {
+  const home = Deno.env.get("HOME") || "";
+  const jsonlPath = `${home}/.claude/projects/${projectSlug}/${sessionId}.jsonl`;
+
+  // Read first 64KB to extract the first user prompt. 2KB is too small for
+  // sessions that start with /command output (e.g. /clear, /model) — the
+  // first real prompt can be several KB in.
+  let prompt = "";
+  try {
+    const file = await Deno.open(jsonlPath);
+    try {
+      const buf = new Uint8Array(64 * 1024);
+      const n = await file.read(buf);
+      if (n && n > 0) {
+        prompt = extractFirstUserPrompt(new TextDecoder().decode(buf.subarray(0, n)));
+      }
+    } finally {
+      file.close();
+    }
+  } catch { return null; } // file missing/unreadable
+
+  // No user prompt yet — session not ready. Will be re-tried on next write.
+  if (!prompt || prompt === "(unknown)") return null;
+
+  // deno-lint-ignore no-explicit-any
+  const client: any = botInstance?.client;
+  if (!client) return null;
+  const guild = client.guilds?.cache?.first();
+  if (!guild) return null;
+
+  // Find or create the claude-code category.
+  // deno-lint-ignore no-explicit-any
+  let category: any = [...guild.channels.cache.values()].find(
+    // deno-lint-ignore no-explicit-any
+    (c: any) => c.type === 4 && c.name === 'claude-code',
+  );
+  if (!category) {
+    try {
+      category = await guild.channels.create({ name: 'claude-code', type: 4 });
+    } catch (err) {
+      console.warn(`[AutoImport] Could not create category:`, err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
+  // Discord caps categories at 50 children. If at the limit, evict the oldest
+  // session channel (by JSONL mtime, excluding `main`) before creating a new one.
+  // Count ALL children (including `main`) since Discord's limit is on total children.
+  // deno-lint-ignore no-explicit-any
+  const allChildren: any[] = [...guild.channels.cache.values()].filter(
+    // deno-lint-ignore no-explicit-any
+    (c: any) => c.parentId === category.id && c.type === 0,
+  );
+  // deno-lint-ignore no-explicit-any
+  const siblings: any[] = allChildren.filter((c: any) => c.name !== 'main');
+  if (allChildren.length >= 50) {
+    let oldest: { id: string; mtime: number } | null = null;
+    for (const c of siblings) {
+      const entry = await getEntryForChannel(c.id);
+      if (!entry) continue;
+      let mtime = 0;
+      try {
+        const stat = await Deno.stat(`${home}/.claude/projects/${entry.projectSlug}/${entry.sessionId}.jsonl`);
+        mtime = stat.mtime?.getTime() ?? 0;
+      } catch { /* missing file → mtime 0 (oldest) */ }
+      if (!oldest || mtime < oldest.mtime) {
+        oldest = { id: c.id, mtime };
+      }
+    }
+    if (oldest) {
+      try {
+        // deno-lint-ignore no-explicit-any
+        const oldChan: any = guild.channels.cache.get(oldest.id);
+        await oldChan?.delete('Auto-import eviction: category at 50-channel limit');
+        await unregisterSessionChannel(oldest.id);
+        console.log(`[AutoImport] Evicted oldest channel ${oldest.id} (mtime=${new Date(oldest.mtime).toISOString()})`);
+      } catch (err) {
+        console.warn(`[AutoImport] Eviction failed:`, err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
+  const base = sanitizeChannelName(prompt).substring(0, 80) || "session";
+  const shortId = sessionId.substring(0, 8);
+  const channelName = `${base}-${shortId}`;
+
+  // deno-lint-ignore no-explicit-any
+  let channel: any;
+  try {
+    channel = await guild.channels.create({
+      name: channelName,
+      type: 0,
+      parent: category.id,
+      topic: `Session ${sessionId} · Project ${projectSlug}`,
+    });
+  } catch (err) {
+    // deno-lint-ignore no-explicit-any
+    const e: any = err;
+    const detail = e?.errors ? JSON.stringify(e.errors) : (e?.message ?? String(err));
+    console.warn(`[AutoImport] Could not create channel for ${shortId} (name="${channelName}"):`, detail);
+    return null;
+  }
+
+  // Backfill last 5 messages so the channel isn't empty.
+  try {
+    const messages = await readLastNMessages(jsonlPath, 5);
+    for (const m of messages) {
+      const prefix = m.role === "user" ? "🧑" : "🤖";
+      const body = m.text.length > 1900 ? m.text.slice(0, 1900) + "…[truncated]" : m.text;
+      try {
+        await channel.send({ content: `${prefix} ${body}` });
+      } catch { /* ignore individual backfill failures */ }
+    }
+  } catch { /* ignore */ }
+
+  // Pin session metadata.
+  try {
+    const pinMsg = await channel.send({
+      content: `**Session UUID:** \`${sessionId}\`\n**Project:** \`${projectSlug}\`\n**Imported:** ${new Date().toISOString()} (auto)\nType a message in this channel to continue this session.`,
+    });
+    await pinMsg.pin();
+  } catch { /* ignore */ }
+
+  await registerSessionChannel(channel.id, {
+    sessionId,
+    projectSlug,
+    firstPrompt: prompt,
+  });
+
+  return channel.id;
+}
+
+/**
+ * Sort all channels in the claude-code category by JSONL mtime (newest first).
+ * `main` is pinned at the top. Channels not in the session-channel map sink
+ * to the bottom (mtime=0). Idempotent: concurrent calls produce the same
+ * payload, so there's no read-modify-write race.
+ */
+// deno-lint-ignore no-explicit-any
+async function sortChannelsByMtime(bot: any): Promise<void> {
+  const client = bot?.client;
+  if (!client) return;
+  const guild = client.guilds?.cache?.first();
+  if (!guild) return;
+
+  // Find the claude-code category.
+  // deno-lint-ignore no-explicit-any
+  const category: any = [...guild.channels.cache.values()].find(
+    // deno-lint-ignore no-explicit-any
+    (c: any) => c.type === 4 && c.name === 'claude-code',
+  );
+  if (!category) return;
+  const categoryId = category.id;
+
+  // deno-lint-ignore no-explicit-any
+  const siblings: any[] = [...guild.channels.cache.values()].filter(
+    // deno-lint-ignore no-explicit-any
+    (c: any) => c.parentId === categoryId && c.type === 0,
+  );
+
+  const home = Deno.env.get("HOME") || "";
+  // deno-lint-ignore no-explicit-any
+  const pinned: any[] = [];
+  // deno-lint-ignore no-explicit-any
+  const sessions: Array<{ channel: any; mtime: number }> = [];
+  for (const c of siblings) {
+    if (c.name === 'main') {
+      pinned.push(c);
+      continue;
+    }
+    const entry = await getEntryForChannel(c.id);
+    if (!entry) {
+      sessions.push({ channel: c, mtime: 0 });
+      continue;
+    }
+    let mtime = 0;
+    try {
+      const stat = await Deno.stat(`${home}/.claude/projects/${entry.projectSlug}/${entry.sessionId}.jsonl`);
+      mtime = stat.mtime?.getTime() ?? 0;
+    } catch { /* missing file → mtime 0 */ }
+    sessions.push({ channel: c, mtime });
+  }
+
+  // Sort by mtime desc. Stable on ties (preserve current position).
+  sessions.sort((a, b) => {
+    if (a.mtime === b.mtime) return (a.channel.position ?? 0) - (b.channel.position ?? 0);
+    return b.mtime - a.mtime;
+  });
+
+  const ordered = [...pinned, ...sessions.map((s) => s.channel)];
+  const payload = ordered.map((c, i) => ({ id: c.id, position: i }));
+
+  try {
+    const { REST, Routes } = await import("npm:discord.js@14.14.1");
+    const rest = new REST({ version: '10' }).setToken(Deno.env.get("DISCORD_TOKEN") || "");
+    await rest.patch(Routes.guildChannels(guild.id), { body: payload });
+  } catch (err) {
+    console.warn(`[Sort] Failed to patch channel positions:`, err instanceof Error ? err.message : err);
+  }
 }
 
 /**

@@ -43,7 +43,7 @@ export const DEFAULT_SETTINGS: AdvancedBotSettings = {
   mentionUserId: null,
   
   // Claude Code (only CLI-supported options)
-  defaultModel: '',
+  defaultModel: Deno.env.get("CLAUDE_CODE_SUBAGENT_MODEL") || Deno.env.get("ANTHROPIC_CUSTOM_MODEL_OPTION") || '',
   defaultSystemPrompt: null,
   autoIncludeSystemInfo: false,
   autoIncludeGitContext: true,

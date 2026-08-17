@@ -629,6 +629,27 @@ export async function createDiscordBot(
     console.log(`[Monitor] Watching channel ${channelId} for messages from ${botIds.join(', ')}`);
   }
 
+  // Session-channel message handler — for channels bound to a Claude Code
+  // session UUID (created by /import-sessions). Plain messages in these
+  // channels continue the original session via `claude --resume <uuid>`.
+  if (dependencies.onSessionChannelMessage) {
+    const onSessionChannelMessage = dependencies.onSessionChannelMessage;
+    client.on(Events.MessageCreate, async (message: Message) => {
+      if (message.author.id === client.user?.id) return;
+      if (message.author.bot) return;
+      const content = message.content?.trim();
+      if (!content) return;
+      // Forward every message in any channel; the callback is responsible
+      // for the isSessionChannel check (cheap persistent map lookup).
+      try {
+        await onSessionChannelMessage(content, message.channelId, message);
+      } catch (err) {
+        console.error('[SessionChannel] Error handling message:', err);
+      }
+    });
+    console.log('[SessionChannel] Listener armed for session-channel messages');
+  }
+
   // Login
   await client.login(discordToken);
 

@@ -228,6 +228,11 @@ export async function sendToClaudeCode(
         options: {
           cwd: workDir,
           permissionMode: permMode,
+          // SDK defaults to invoking `node` + its bundled package; point at the
+          // real Claude Code binary on this host (installed via native installer,
+          // typically symlinked at ~/.local/bin/claude). Without this the SDK
+          // fails with "process exited with code 1" because no node script exists.
+          pathToClaudeCodeExecutable: Deno.env.get("CLAUDE_BINARY_PATH") || `${Deno.env.get("HOME") || ""}/.local/bin/claude`,
           // Use Claude Code's system prompt + optional append
           systemPrompt: systemPromptConfig,
           // Load project CLAUDE.md files
