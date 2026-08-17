@@ -1,0 +1,43 @@
+# Build artifacts and runtime data — never bake into the image
+.bot-data/
+.git/
+.github/
+.idea/
+.vscode/
+plan/
+node_modules/
+coverage/
+.next/
+dist/
+build/
+
+# Local Docker Compose override (host-specific bind mounts + env vars)
+docker-compose.override.yml
+
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+
+# Logs and debug
+npm-debug.log*
+yarn-debug.log*
+*.log
+dump.rdb
+
+# OS / editor
+.DS_Store
+*.pem
+*.tsbuildinfo
+
+# Python (in case of local tooling)
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Archives
+**/*.zip
+**/*.tar.gz
+**/*.tar
+**/*.tgz

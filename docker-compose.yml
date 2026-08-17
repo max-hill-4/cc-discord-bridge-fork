@@ -54,8 +54,6 @@ services:
     volumes:
       # Persist bot data (session-channel map, etc.)
       - bot-data:/app/.bot-data
-      # SDK / Claude home state (container-side, for basic mode)
-      - claude-config:/home/claude/.claude
       # Optional: Mount your local workspace for Claude to work on
       # Uncomment and modify path as needed:
       # - /path/to/your/project:/app/workspace
@@ -96,8 +94,6 @@ services:
 # Named volumes for data persistence
 volumes:
   bot-data:
-    driver: local
-  claude-config:
     driver: local
 
 # Network configuration

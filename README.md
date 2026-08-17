@@ -141,8 +141,6 @@ This fork adds the ability to mirror your host's Claude Code CLI sessions into D
 
 WARNING: Session-bridging volumes give the container read-write access to the mounted host paths. Only enable on a trusted host.
 
-**systemd --user mode (no Docker):** Runs the bot directly on the host as a user service. Simpler for session-bridging since the bot can see `~/.claude/projects/` and spawn `claude --resume` without any bind mounts. See [`scripts/cc-discord-bridge.service`](scripts/cc-discord-bridge.service) for a portable unit file using `%h` specifiers.
-
 ## Startup Options
 
 ```bash

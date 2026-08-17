@@ -97,4 +97,7 @@ agenthub/agents/youtube/db
 .cache/
 
 # Mobile development
-android-sdk/ 
+android-sdk/
+
+# Local Docker Compose overrides (host-specific bind mounts, env vars)
+docker-compose.override.yml
