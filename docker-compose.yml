@@ -1,52 +1,72 @@
 # Claude Code Discord Bot - Docker Compose Configuration
 # Quick start: docker compose up -d
 #
-# Authentication: ANTHROPIC_API_KEY is required in Docker.
-# The bot uses the Claude Agent SDK (no Claude CLI in the image).
-# Set ANTHROPIC_API_KEY in your .env file before starting.
+# Two deployment modes:
 #
-# To use the pre-built image from GitHub Container Registry (recommended):
-#   1. Comment out the 'build' section below
-#   2. Uncomment the 'image' line
-#   3. Run: docker compose pull && docker compose up -d
+# 1. BASIC MODE (default): Bot talks to Claude via the SDK. No session-bridging.
+#    Just set DISCORD_TOKEN + APPLICATION_ID + ANTHROPIC_API_KEY in .env.
+#
+# 2. SESSION-BRIDGING MODE: Bot mirrors host CLI sessions to Discord channels and
+#    lets you continue them from Discord. Requires:
+#      - Bind-mounting host's ~/.claude (for the watcher + claude --resume auth)
+#      - Bind-mounting host's project directories (so claude --resume can cd to
+#        the session's original cwd)
+#      - CLAUDE_BINARY_PATH pointing at the in-container claude binary
+#    Uncomment the SESSION-BRIDGING volumes and env vars below to enable.
+#
+# The session-bridging volumes give the container read-write access to the
+# mounted host paths. Only enable this on a trusted host.
 
 services:
   claude-bot:
-    # Option A: Build locally from source (default)
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        # Pass host HEAD so version checks compare a real commit (not a fake /app git repo).
-        # CI sets this via docker-publish.yml; locally export first if needed:
-        #   export GIT_COMMIT=$(git rev-parse HEAD)   # or: $env:GIT_COMMIT = git rev-parse HEAD
         GIT_COMMIT: ${GIT_COMMIT:-}
+        # Match host user UID/GID so bind-mounted files have correct ownership.
+        USER_ID: ${USER_ID:-1000}
+        GROUP_ID: ${GROUP_ID:-1000}
     # Option B: Use pre-built image from GHCR (uncomment and remove build above)
     # image: ghcr.io/zebbern/claude-code-discord:latest
     container_name: claude-code-discord
     restart: unless-stopped
 
     # Environment variables (use .env file or set here)
-    # ANTHROPIC_API_KEY is required — SDK auth (no `claude /login` in this image)
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - APPLICATION_ID=${APPLICATION_ID}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - WORK_DIR=${WORK_DIR:-/app/workspace}
       - USER_ID=${USER_ID:-}
       - CATEGORY_NAME=${CATEGORY_NAME:-claude-code}
       - MONITOR_CHANNEL_ID=${MONITOR_CHANNEL_ID:-}
       - MONITOR_BOT_IDS=${MONITOR_BOT_IDS:-}
+      # ── SESSION-BRIDGING MODE (uncomment to enable) ──
+      # Path to the in-container claude binary (installed in Dockerfile).
+      - CLAUDE_BINARY_PATH=/usr/bin/claude
+      # Anthropic auth — for Ollama Cloud proxy, set these instead of ANTHROPIC_API_KEY:
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - CLAUDE_CODE_SUBAGENT_MODEL=${CLAUDE_CODE_SUBAGENT_MODEL:-}
 
     # Volume mounts for persistence and workspace access
     volumes:
-      # Persist bot data (todos, sessions, etc.)
+      # Persist bot data (session-channel map, etc.)
       - bot-data:/app/.bot-data
-      # Optional SDK / Claude home state
+      # SDK / Claude home state (container-side, for basic mode)
       - claude-config:/home/claude/.claude
       # Optional: Mount your local workspace for Claude to work on
       # Uncomment and modify path as needed:
       # - /path/to/your/project:/app/workspace
+      # ── SESSION-BRIDGING MODE (uncomment to enable) ──
+      # Mount host's ~/.claude so the watcher sees CLI sessions and claude --resume
+      # has auth. Replace ${HOME} with your actual home path if Compose doesn't expand it.
+      # - ${HOME}/.claude:/home/claude/.claude
+      # Mount host's home directory (or specific project dirs) so `claude --resume`
+      # can cd to a session's original cwd. WARNING: gives the container access to
+      # everything under the mounted path. Mount only what you need.
+      # - ${HOME}:${HOME}
 
     # Resource limits (adjust based on your needs)
     deploy:

@@ -117,6 +117,32 @@ MONITOR_BOT_IDS=987654321,111111111      # Comma-separated bot/webhook/user IDs 
 
 > CLI flags override environment variables. Environment variables override `.env` file values.
 
+## Session Bridging
+
+This fork adds the ability to mirror your host's Claude Code CLI sessions into Discord channels and continue them from Discord. Each session in `~/.claude/projects/*/*.jsonl` becomes a channel under the `claude-code` category; new user/assistant messages are live-mirrored as embeds; typing a plain message in a session channel runs `claude --resume <session-id>` and streams the response back.
+
+### Features
+
+- **`/import-sessions`** slash command — bulk-import the last N CLI sessions as Discord channels with backfilled messages + pinned metadata.
+- **Filesystem watcher** — detects new writes to `~/.claude/projects/**/*.jsonl`, re-sorts channels by mtime (newest first), and live-mirrors user/assistant text to the bound channel.
+- **Auto-import** — when a new CLI session is started on the host, a Discord channel is created for it automatically on the first real user prompt.
+- **Category eviction** — Discord caps categories at 50 channels. When auto-import hits the limit, the oldest session channel (by JSONL mtime) is evicted.
+- **Continue from Discord** — typing in a session channel runs `claude --resume <session-id>` with the session's original cwd restored, streaming output back to the channel.
+
+### Deployment Modes
+
+**Basic mode (Docker, default):** Bot talks to Claude via the SDK. No session-bridging. Set `DISCORD_TOKEN` + `APPLICATION_ID` + `ANTHROPIC_API_KEY` in `.env`, then `docker compose up -d`.
+
+**Session-bridging mode (Docker):** Uncomment the `SESSION-BRIDGING MODE` lines in `docker-compose.yml`. Requires:
+- Bind-mounting host's `~/.claude` to `/home/claude/.claude` (watcher + claude --resume auth).
+- Bind-mounting host's project directories (so `claude --resume` can cd to the session's original cwd).
+- `CLAUDE_BINARY_PATH=/usr/bin/claude` (set automatically by the Dockerfile).
+- For Ollama Cloud proxy: `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_SUBAGENT_MODEL` instead of `ANTHROPIC_API_KEY`.
+
+WARNING: Session-bridging volumes give the container read-write access to the mounted host paths. Only enable on a trusted host.
+
+**systemd --user mode (no Docker):** Runs the bot directly on the host as a user service. Simpler for session-bridging since the bot can see `~/.claude/projects/` and spawn `claude --resume` without any bind mounts. See [`scripts/cc-discord-bridge.service`](scripts/cc-discord-bridge.service) for a portable unit file using `%h` specifiers.
+
 ## Startup Options
 
 ```bash
