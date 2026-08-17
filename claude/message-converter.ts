@@ -141,14 +141,26 @@ export function convertToClaudeMessages(jsonData: any): ClaudeMessage[] {
         }
       });
     }
-    // Generic system messages
-    else {
+    // Surface errors and interrupts — these are worth seeing in Discord.
+    else if (
+      jsonData.subtype === 'api_error' ||
+      jsonData.subtype === 'error' ||
+      jsonData.subtype === 'error_during_execution' ||
+      jsonData.subtype === 'error_max_budget_usd' ||
+      jsonData.subtype === 'error_max_structured_output_retries' ||
+      jsonData.subtype === 'error_max_turns' ||
+      jsonData.subtype === 'interrupt'
+    ) {
       messages.push({
         type: 'system',
         content: '',
         metadata: jsonData
       });
     }
+    // Drop everything else (init, thinking_tokens, turn_duration, status,
+    // informational, compact_boundary, microcompact_boundary, local_command,
+    // file_snapshot, hook_*, mcp_message, can_use_tool, stop_hook_summary, …).
+    // These are SDK internals that just produce "System: <subtype>" embed spam.
   } else if (jsonData.type === 'tool_progress') {
     // Tool progress updates (long-running tools)
     messages.push({
