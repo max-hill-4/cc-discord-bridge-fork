@@ -41,9 +41,12 @@ RUN rm -f deno.lock
 # Pre-compile Deno dependencies
 RUN deno cache --no-lock index.ts
 
-# Create data directory for persistence + workspace dir, set ownership
+# Create data directory for persistence + workspace dir, set ownership.
+# git-init /app so getGitInfo() at startup succeeds (bot runs from WORKDIR /app).
+# Use -b main so the branch channel matches the existing Discord channel.
 RUN mkdir -p .bot-data /app/workspace /home/claude/.claude && \
-    cd /app/workspace && git init && git config user.email "bot@claude.local" && git config user.name "Claude Bot" && \
+    git init -b main && git config user.email "bot@claude.local" && git config user.name "Claude Bot" && \
+    cd /app/workspace && git init -b main && git config user.email "bot@claude.local" && git config user.name "Claude Bot" && \
     chown -R claude:claude /app /home/claude
 
 # Point the bot at the in-container claude binary
