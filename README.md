@@ -1,5 +1,13 @@
 <div align="center">
 
+> **This is a fork** of [zebbern/claude-code-discord](https://github.com/zebbern/claude-code-discord).
+> It adds **session bridging**: your existing Claude Code CLI sessions (the ones in `~/.claude/projects/*.jsonl`) become Discord channels, and you can continue them from Discord. New CLI sessions auto-import; typing in a channel resumes the original session via `claude --resume <uuid>`. See [Session Bridging](#session-bridging) below.
+>
+> Clone this fork (not the upstream repo) to get the new features:
+> ```bash
+> git clone https://github.com/max-hill-4/cc-discord-bridge-fork.git
+> ```
+
 # claude-code-discord
 
 **Run Claude Code from Discord with full SDK integration, agents, rewind, mid-session controls and more.**
