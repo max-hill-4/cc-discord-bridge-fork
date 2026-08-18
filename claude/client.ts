@@ -157,6 +157,10 @@ export interface ClaudeModelOptions {
 
 // Default query timeout: 10 minutes. Prevents hanging if the SDK stalls.
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000;
+// Resume / continue runs against long-running sessions can legitimately
+// need more than 10 minutes (e.g. the user pastes a long task and the SDK
+// is reading it back plus executing). Use a separate, higher cap for those.
+const RESUME_QUERY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
 // Wrapper for Claude Code SDK query function
 export async function sendToClaudeCode(
@@ -414,8 +418,9 @@ export async function sendToClaudeCode(
     }
   };
   
-  // First try with specified model (or default), with a timeout to prevent indefinite hangs
-  const timeoutMs = DEFAULT_QUERY_TIMEOUT_MS;
+  // First try with specified model (or default), with a timeout to prevent indefinite hangs.
+  // Resume runs (passing sessionId) get a longer cap; fresh runs use the default.
+  const timeoutMs = cleanedSessionId ? RESUME_QUERY_TIMEOUT_MS : DEFAULT_QUERY_TIMEOUT_MS;
   const channelId = modelOptions?.channelId;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
