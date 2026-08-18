@@ -1,9 +1,15 @@
 <div align="center">
 
 > **This is a fork** of [zebbern/claude-code-discord](https://github.com/zebbern/claude-code-discord).
-> It adds **session bridging**: your existing Claude Code CLI sessions (the ones in `~/.claude/projects/*.jsonl`) become Discord channels, and you can continue them from Discord. New CLI sessions auto-import; typing in a channel resumes the original session via `claude --resume <uuid>`. See [Session Bridging](#session-bridging) below.
+> It adds **session bridging** (~1.9k lines on top of upstream across 8 commits):
 >
-> Clone this fork (not the upstream repo) to get the new features:
+> - **Mirror** — every CLI session in `~/.claude/projects/*.jsonl` gets a Discord channel under the `claude-code` category, with user/assistant messages live-streamed as embeds.
+> - **Auto-import** — files written from any host CLI session are picked up automatically and turned into channels (with eviction at the 50-channel-per-category Discord cap).
+> - **Continue from Discord** — typing in a session channel runs `claude --resume <uuid>` with the session's original cwd, streaming the reply back to the channel.
+> - **Docker-native** — the image installs the Claude Code CLI and supports session-bridging via a gitignored `docker-compose.override.yml` (no systemd required).
+> - **Cleaner output** — drops `System: init`, `System: thinking_tokens`, `System: turn_duration`, etc. embed spam; raise the resume-query timeout to 1h.
+>
+> See [Session Bridging](#session-bridging) for full details. Clone this fork, not the upstream repo, to get the new features:
 > ```bash
 > git clone https://github.com/max-hill-4/cc-discord-bridge-fork.git
 > ```
